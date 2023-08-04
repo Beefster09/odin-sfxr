@@ -165,7 +165,6 @@ Playback_State :: struct {
 	ipp: int,
 
 	sample_rate: int,
-	oversampling: int,
 	sample_sum: f32,
 	num_summed: int,
 	summands: f32,
@@ -225,7 +224,6 @@ playback_init :: proc(pb: ^Playback_State, parameters: ^Params, sample_rate: int
 	pb.ipp   = 0
 	mem.zero(&pb.flanger_buffer[0], size_of(f32) * len(pb.flanger_buffer))
 
-	pb.oversampling = 8
 	pb.sample_rate = sample_rate
 	pb.sample_sum = 0
 	pb.num_summed = 0
@@ -265,6 +263,8 @@ generate_into_buffer :: proc(
 	pb: ^Playback_State,
 	db_gain: f32 = 0,
 ) -> (num_samples_written: int, err: Error)  where intrinsics.type_is_numeric(T) {
+	OVERSAMPLING :: 8
+
 	ps := pb.parameters
 
 	linear_gain := math.pow(10, db_gain / 10) * (math.exp(ps.sound_vol) - 1)
@@ -300,7 +300,7 @@ generate_into_buffer :: proc(
 			pb.vibrato_phase += pb.vibrato_speed
 			rfperiod = pb.period * (1 + math.sin(pb.vibrato_phase) * pb.vibrato_amplitude)
 		}
-		iperiod := max(int(rfperiod), pb.oversampling)
+		iperiod := max(int(rfperiod), OVERSAMPLING)
 
 		// Square wave duty cycle
 		pb.duty_cycle = clamp(pb.duty_cycle + pb.duty_cycle_slide, 0, 0.5)
@@ -334,7 +334,7 @@ generate_into_buffer :: proc(
 		}
 
 		sample: f32
-		for si in 0 ..< pb.oversampling {
+		for si in 0 ..< OVERSAMPLING {
 			sub_sample: f32
 			pb.phase += 1
 			if (pb.phase >= iperiod) {
@@ -409,7 +409,7 @@ generate_into_buffer :: proc(
 			continue
 		}
 
-		sample *= ps.sound_vol * linear_gain / f32(pb.oversampling)
+		sample *= ps.sound_vol * linear_gain / OVERSAMPLING
 
 		when intrinsics.type_is_integer(T) {
 			when intrinsics.type_is_unsigned(T) {
