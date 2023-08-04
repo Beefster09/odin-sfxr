@@ -1,11 +1,14 @@
 package sfxr
 
 
+import "core:encoding/json"
+import "core:intrinsics"
 import "core:math"
 import "core:math/rand"
+import "core:mem"
+import "core:reflect"
 import "core:runtime"
-import "core:intrinsics"
-import "core:encoding/json"
+import "core:strconv"
 
 
 Wave_Shape :: enum i32 {
@@ -372,7 +375,18 @@ generate_pcm :: proc(
 }
 
 
-from_bin :: proc(ps: ^Params, data: []u8) -> Error { return .Not_Implemented }
+from_bin :: proc(ps: ^Params, data: []u8) -> Error {
+	version := mem.reinterpret_copy(i32, raw_data(data))
+	i := size_of(i32)
+	for field in reflect.struct_fields_zipped(Params) {
+		if version_tag, exists := reflect.struct_tag_lookup(field.tag, "v"); exists && i32(strconv.atoi(string(version_tag))) > version {
+			continue
+		}
+		mem.copy(rawptr(uintptr(ps) + field.offset), &data[i], field.type.size)
+		i += field.type.size
+	}
+	return .Ok
+}
 from_json :: proc(ps: ^Params, data: []u8) -> Error {
 	if err := json.unmarshal(data, ps, .JSON5, runtime.nil_allocator()); err != nil {
 		return .Invalid_Data
