@@ -5,62 +5,73 @@ import "core:math"
 import "core:math/rand"
 import "core:runtime"
 import "core:intrinsics"
+import "core:encoding/json"
 
 
-Wave_Shape :: enum {
-	Square,
-	Sawtooth,
-	Sine,
-	Noise,
+Wave_Shape :: enum i32 {
+	Square   = 0,
+	Sawtooth = 1,
+	Sine     = 2,
+	Noise    = 3,
 }
 
 Params :: struct {
+	// should match original serialization order and versioning
+	// see https://github.com/grimfang4/sfxr/blob/master/sfxr/source/main.cpp#L196
 	wave_type: Wave_Shape,
 
-	// Envelope
-	env_attack:    f32, // Attack time
-	env_sustain:   f32, // Sustain time
-	env_punch:     f32, // Sustain punch
-	env_decay:     f32, // Decay time
+	sound_vol: f32 `v:"102"`,
 
-	// Tone
-	base_freq:     f32, // Start frequency
-	freq_limit:    f32, // Min frequency cutoff
-	freq_ramp:     f32, // Slide (SIGNED)
-	freq_dramp:    f32, // Delta slide (SIGNED)
+	//  Tone
+	base_freq:     f32 `json:"p_base_freq"`,     // Start frequency
+	freq_limit:    f32 `json:"p_freq_limit"`,    // Min frequency cutoff
+	freq_ramp:     f32 `json:"p_freq_ramp"`,     // Slide (SIGNED)
+	freq_dramp:    f32 `json:"p_freq_dramp" v:"101"`,    // Delta slide (SIGNED)
 
-	// Vibrato
-	vib_strength:  f32, // Vibrato depth
-	vib_speed:     f32, // Vibrato speed
+	//  Square wave duty (proportion of time signal is high vs. low)
+	duty:          f32 `json:"p_duty"`,          // Square duty
+	duty_ramp:     f32 `json:"p_duty_ramp"`,     // Duty sweep (SIGNED)
 
-	// Tonal change
-	arp_mod:       f32, // Change amount (SIGNED)
-	arp_speed:     f32, // Change speed
+	//  Vibrato
+	vib_strength:  f32 `json:"p_vib_strength"`,  // Vibrato depth
+	vib_speed:     f32 `json:"p_vib_speed"`,     // Vibrato speed
+	vib_delay:     f32, // not in jsfxr
 
-	// Square wave duty (proportion of time signal is high vs. low)
-	duty:          f32, // Square duty
-	duty_ramp:     f32, // Duty sweep (SIGNED)
+	//  Envelope
+	env_attack:    f32 `json:"p_env_attack"`,    // Attack time
+	env_sustain:   f32 `json:"p_env_sustain"`,   // Sustain time
+	env_decay:     f32 `json:"p_env_decay"`,     // Decay time
+	env_punch:     f32 `json:"p_env_punch"`,     // Sustain punch
 
-	// Repeat
-	repeat_speed:  f32, // Repeat speed
+	filter_on: bool, // not in jsfxr
+	//  Low-pass filter
+	lpf_resonance: f32 `json:"p_lpf_resonance"`, // Low-pass filter resonance
+	lpf_freq:      f32 `json:"p_lpf_freq"`,      // Low-pass filter cutoff
+	lpf_ramp:      f32 `json:"p_lpf_ramp"`,      // Low-pass filter cutoff sweep (SIGNED)
 
-	// Flanger
-	pha_offset:    f32, // Flanger offset (SIGNED)
-	pha_ramp:      f32, // Flanger sweep (SIGNED)
+	//  High-pass filter
+	hpf_freq:      f32 `json:"p_hpf_freq"`,      // High-pass filter cutoff
+	hpf_ramp:      f32 `json:"p_hpf_ramp"`,      // High-pass filter cutoff sweep (SIGNED)
 
-	// Low-pass filter
-	lpf_freq:      f32, // Low-pass filter cutoff
-	lpf_ramp:      f32, // Low-pass filter cutoff sweep (SIGNED)
-	lpf_resonance: f32, // Low-pass filter resonance
+	//  Flanger
+	pha_offset:    f32 `json:"p_pha_offset"`,    // Flanger offset (SIGNED)
+	pha_ramp:      f32 `json:"p_pha_ramp"`,      // Flanger sweep (SIGNED)
 
-	// High-pass filter
-	hpf_freq:      f32, // High-pass filter cutoff
-	hpf_ramp:      f32, // High-pass filter cutoff sweep (SIGNED)
+	//  Repeat
+	repeat_speed:  f32 `json:"p_repeat_speed"`,  // Repeat speed
+
+	//  Tonal change
+	arp_mod:       f32 `json:"p_arp_mod" v:"101"`,       // Change amount (SIGNED)
+	arp_speed:     f32 `json:"p_arp_speed" v:"101"`,     // Change speed
 }
+SERIAL_PARAMS_SIZE :: size_of(Params) + size_of(i32) - 3  // i32 version, accounts for padding after filter_on
+PARAMS_CURRENT_VERSION :: 102
 
 Error :: enum {
 	Ok = 0,
+	Invalid_Data,
 	Allocation_Failure,
+	Buffer_Too_Small,
 
 	Unknown = -1,
 	Not_Implemented = -2,
@@ -84,6 +95,8 @@ generate_pcm :: proc(
 	rand_state: ^rand.Rand = nil,
 	allocator := context.allocator,
 ) -> (pcm_samples: []T, err: Error) where intrinsics.type_is_numeric(T) {
+	// TODO: modify this to allow generating segments of pcm into a fixed buffer
+	// so that this can e.g. be used as a custom decoder in miniaudio
 
 	OVERSAMPLING :: 8
 
@@ -128,7 +141,6 @@ generate_pcm :: proc(
 	// from SoundEffect.init
 
 	fltw := math.pow(ps.lpf_freq, 3) * 0.1
-	enable_low_pass_filter := ps.lpf_freq != 1
 	fltw_d := 1 + ps.lpf_ramp * 0.0001
 	fltdmp := clamp(5 / (1 + math.pow(ps.lpf_resonance, 2) * 20) * (0.01 + fltw), 0, 0.8)
 	flthp := math.pow(ps.hpf_freq, 2) * 0.1
@@ -161,7 +173,7 @@ generate_pcm :: proc(
 		repeat_time = 0
 	}
 
-	linear_gain := math.pow(10, db_gain)
+	linear_gain := math.pow(10, db_gain) * (math.exp(ps.sound_vol) - 1)
 
 	// from SoundEffect.getRawBuffer
 
@@ -194,8 +206,6 @@ generate_pcm :: proc(
 	} else {
 		delete(buffer)
 	}
-
-	// normalized := []
 
 	sample_sum: f32 = 0
 	num_summed := 0
@@ -304,7 +314,7 @@ generate_pcm :: proc(
 			// Low-pass filter
 			pp := fltp
 			fltw = clamp(fltw * fltw_d, 0, 0.1)
-			if (enable_low_pass_filter) {
+			if (ps.filter_on) {
 				fltdp += (sub_sample - fltp) * fltw
 				fltdp -= fltdp * fltdmp
 			} else {
@@ -338,7 +348,7 @@ generate_pcm :: proc(
 			continue
 		}
 
-		sample = sample / OVERSAMPLING * linear_gain
+		sample = sample / OVERSAMPLING * ps.sound_vol * linear_gain
 
 		when intrinsics.type_is_integer(T) {
 			when intrinsics.type_is_unsigned(T) {
@@ -358,20 +368,28 @@ generate_pcm :: proc(
 		}
 	}
 
-	return buffer[:], .Not_Implemented
+	return buffer[:], .Ok
 }
 
-B58_ALPHABET :: "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 from_bin :: proc(ps: ^Params, data: []u8) -> Error { return .Not_Implemented }
-from_json :: proc(ps: ^Params, data: []u8) -> Error { return .Not_Implemented }
-from_b58 :: proc(ps: ^Params, data: string) -> Error { return .Not_Implemented }
+from_json :: proc(ps: ^Params, data: []u8) -> Error {
+	if err := json.unmarshal(data, ps, .JSON5, runtime.nil_allocator()); err != nil {
+		return .Invalid_Data
+	}
+	ps.filter_on = ps.lpf_freq != 1
+	return .Ok
+}
 
 to_bin :: proc {
 	to_bin_buf,
 	to_bin_alloc,
 }
-to_bin_buf :: proc(ps: ^Params, buf: []u8) -> Error { return .Not_Implemented }
+to_bin_buf :: proc(ps: ^Params, buf: []u8) -> Error {
+	if len(buf) < SERIAL_PARAMS_SIZE {
+		return .Buffer_Too_Small
+	}
+	return .Not_Implemented
+}
 to_bin_alloc :: proc(ps: ^Params, allocator := context.allocator) -> ([]u8, Error) { return nil, .Not_Implemented }
 to_json :: proc(ps: ^Params, allocator := context.allocator) -> ([]u8, Error) { return nil, .Not_Implemented }
-to_b58 :: proc(ps: ^Params, allocator := context.allocator) -> (string, Error) { return "", .Not_Implemented }
