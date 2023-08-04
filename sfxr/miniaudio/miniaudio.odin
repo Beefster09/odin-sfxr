@@ -31,6 +31,7 @@ generator_init_params :: proc(g: ^Generator, parameters: sfxr.Params, sample_rat
 	if sfxr.playback_init(&g.playback, parameters, sample_rate) != .Ok {
 		return .ERROR
 	}
+	g.odin_context = context
 	return .SUCCESS
 }
 
@@ -48,11 +49,34 @@ generator_init_bin :: proc(g: ^Generator, data: []u8, sample_rate := 44100) -> m
 	if sfxr.playback_init(&g.playback, params, sample_rate) != .Ok {
 		return .ERROR
 	}
+	g.odin_context = context
 	return .SUCCESS
 }
 
 create_sound :: proc {
+	create_sound_params,
 	create_sound_bin,
+}
+
+create_sound_params :: proc(engine: ^ma.engine, params: sfxr.Params, sample_rate := 44100, allocator := context.allocator) -> (sound: ^ma.sound, status: ma.result) {
+	generator := new(Generator, allocator)
+	defer if status != .SUCCESS {
+		free(generator)
+	}
+	status = generator_init_params(generator, params, sample_rate)
+	if status != .SUCCESS {
+		return nil, status
+	}
+
+	sound = new(ma.sound, allocator)
+	defer if status != .SUCCESS {
+		free(sound)
+	}
+	status = ma.sound_init_from_data_source(engine, cast(^ma.data_source) generator, 0, nil, sound)
+	if status != .SUCCESS {
+		return nil, status
+	}
+	return sound, .SUCCESS
 }
 
 create_sound_bin :: proc(engine: ^ma.engine, data: []u8, sample_rate := 44100, allocator := context.allocator) -> (sound: ^ma.sound, status: ma.result) {
