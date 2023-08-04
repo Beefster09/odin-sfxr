@@ -84,10 +84,10 @@ generate_8bit :: #force_inline proc(
 	ps: ^Params,
 	sample_rate: int = 44100,
 	db_gain: f32 = 0,
-	rand_state: ^rand.Rand = nil,
+	seed: Maybe(u64) = nil,
 	allocator := context.allocator,
 ) -> ([]u8, Error) {
-	return generate_pcm(u8, ps, sample_rate, db_gain, rand_state, allocator)
+	return generate_pcm(u8, ps, sample_rate, db_gain, seed, allocator)
 }
 
 generate_pcm :: proc(
@@ -95,111 +95,13 @@ generate_pcm :: proc(
 	ps: ^Params,
 	sample_rate: int = 44100,
 	db_gain: f32 = 0,
-	rand_state: ^rand.Rand = nil,
+	seed: Maybe(u64) = nil,
 	allocator := context.allocator,
-) -> (pcm_samples: []T, err: Error) where intrinsics.type_is_numeric(T) {
-	// TODO: modify this to allow generating segments of pcm into a fixed buffer
-	// so that this can e.g. be used as a custom decoder in miniaudio
+) -> (pcm_samples: []T, err: Error) {
+	pb: Playback_State
+	playback_init(&pb, ps, sample_rate, seed)
 
-	OVERSAMPLING :: 8
-
-	Repeat_Params :: struct {
-		elapsed_since_repeat: int,
-
-		period, period_max: f32,
-		enable_frequency_cutoff: bool,
-		period_mult, period_mult_slide: f32,
-		duty_cycle, duty_cycle_slide: f32,
-		arpeggio_multiplier: f32,
-		arpeggio_time: int,
-	}
-
-	init_for_repeat :: proc(rp: ^Repeat_Params, ps: ^Params) {
-		rp.elapsed_since_repeat = 0
-
-		rp.period     = 100 / (ps.base_freq  * ps.base_freq  + 0.001)
-		rp.period_max = 100 / (ps.freq_limit * ps.freq_limit + 0.001)
-		rp.enable_frequency_cutoff = ps.freq_limit > 0
-		rp.period_mult    = 1 - math.pow(ps.freq_ramp, 3)  * 0.01
-		rp.period_mult_slide = -math.pow(ps.freq_dramp, 3) * 0.000001
-
-		rp.duty_cycle = 0.5 - ps.duty * 0.5
-		rp.duty_cycle_slide = -ps.duty_ramp * 0.00005
-
-		if ps.arp_mod >= 0 {
-			rp.arpeggio_multiplier = 1 - math.pow(ps.arp_mod, 2) * .9
-		}
-		else {
-			rp.arpeggio_multiplier = 1 + math.pow(ps.arp_mod, 2) * 10
-		}
-		rp.arpeggio_time = int(math.pow(1 - ps.arp_speed, 2) * 20000 + 32)
-		if ps.arp_speed == 1 {
-			rp.arpeggio_time = 0
-		}
-	}
-
-	rp: Repeat_Params
-	init_for_repeat(&rp, ps)
-
-	// from SoundEffect.init
-
-	fltw := math.pow(ps.lpf_freq, 3) * 0.1
-	fltw_d := 1 + ps.lpf_ramp * 0.0001
-	fltdmp := clamp(5 / (1 + math.pow(ps.lpf_resonance, 2) * 20) * (0.01 + fltw), 0, 0.8)
-	flthp := math.pow(ps.hpf_freq, 2) * 0.1
-	flthp_d := 1 + ps.hpf_ramp * 0.0003
-
-	// Vibrato
-	vibrato_speed := math.pow(ps.vib_speed, 2) * 0.01
-	vibrato_amplitude := ps.vib_strength * 0.5
-
-	// Envelope
-	envelope_length := [3]int {
-		int(ps.env_attack  * ps.env_attack  * 100_000),
-		int(ps.env_sustain * ps.env_sustain * 100_000),
-		int(ps.env_decay   * ps.env_decay   * 100_000),
-	}
-	envelope_punch := ps.env_punch
-	ENV_ATTACK  :: 0
-	ENV_SUSTAIN :: 1
-	ENV_DECAY   :: 2
-
-	// Flanger
-	flanger_offset := math.pow(ps.pha_offset, 2) * 1020
-	if ps.pha_offset < 0 { flanger_offset = -flanger_offset }
-	flanger_offset_slide := math.pow(ps.pha_ramp, 2) * 1
-	if ps.pha_ramp < 0 { flanger_offset_slide = -flanger_offset_slide }
-
-	// Repeat
-	repeat_time := int(math.pow(1 - ps.repeat_speed, 2) * 20_000 + 32)
-	if ps.repeat_speed == 0 {
-		repeat_time = 0
-	}
-
-	linear_gain := math.pow(10, db_gain) * (math.exp(ps.sound_vol) - 1)
-
-	// from SoundEffect.getRawBuffer
-
-	fltp: f32 = 0
-	fltdp: f32 = 0
-	fltphp: f32 = 0
-
-	noise_buffer: [32]f32
-	for _, i in noise_buffer {
-		noise_buffer[i] = rand.float32_range(-1, 1, rand_state)
-	}
-
-	envelope_stage   := 0
-	envelope_elapsed := 0
-
-	vibrato_phase: f32 = 0
-
-	phase := 0
-	ipp   := 0
-	flanger_buffer: [1024]f32
-
-	est_samples := (envelope_length[0] + envelope_length[1] + envelope_length[2])
-
+	est_samples := math.sum(pb.envelope_length[:])
 	buffer, alloc_err := make([dynamic]T, 0, est_samples, allocator)
 	if alloc_err != .None {
 		return nil, .Allocation_Failure
@@ -210,52 +112,208 @@ generate_pcm :: proc(
 		delete(buffer)
 	}
 
-	sample_sum: f32 = 0
-	num_summed := 0
-	summands := 44100 / f32(sample_rate)
+	for {
+		chunk: [4096]T
+		n, gen_err := generate_into_buffer(chunk[:], &pb, db_gain)
+		if gen_err != .Ok {
+			return nil, gen_err
+		}
+		if n > 0 {
+			append(&buffer, ..chunk[:n])
+		}
+		if n < 4096 { break }
+	}
 
-	for t := 0;; t += 1 {
+	return buffer[:], .Ok
+}
+
+Playback_State :: struct {
+	parameters: Params,
+
+	t: int,
+	repeat_time: int,
+	elapsed_since_repeat: int,
+
+	period, period_max: f32,
+	enable_frequency_cutoff: bool,
+	period_mult, period_mult_slide: f32,
+	duty_cycle, duty_cycle_slide: f32,
+	arpeggio_multiplier: f32,
+	arpeggio_time: int,
+
+	fltw, fltw_d: f32,
+	flthp, flthp_d: f32,
+	fltdmp: f32,
+	fltp, fltdp, fltphp: f32,
+
+	vibrato_speed: f32,
+	vibrato_amplitude: f32,
+	vibrato_phase: f32,
+
+	envelope_length: [3]int,
+	envelope_stage: int,
+	envelope_elapsed: int,
+
+	flanger_buffer: [1024]f32,
+	flanger_offset: f32,
+	flanger_offset_slide: f32,
+
+	noise_buffer: [32]f32,
+	rand_state: rand.Rand,
+
+	phase: int,
+	ipp: int,
+
+	sample_rate: int,
+	oversampling: int,
+	sample_sum: f32,
+	num_summed: int,
+	summands: f32,
+}
+@private ENV_ATTACK  :: 0
+@private ENV_SUSTAIN :: 1
+@private ENV_DECAY   :: 2
+
+playback_init :: proc(pb: ^Playback_State, parameters: ^Params, sample_rate: int, seed: Maybe(u64) = nil) {
+	pb.parameters = parameters^
+	_playback_init_for_repeat(pb)
+	ps := pb.parameters
+
+	rand.init(&pb.rand_state, seed.(u64) or_else u64(intrinsics.read_cycle_counter()))
+
+	pb.fltw = math.pow(ps.lpf_freq, 3) * 0.1
+	pb.fltw_d = 1 + ps.lpf_ramp * 0.0001
+	pb.fltdmp = clamp(5 / (1 + math.pow(ps.lpf_resonance, 2) * 20) * (0.01 + pb.fltw), 0, 0.8)
+	pb.flthp = math.pow(ps.hpf_freq, 2) * 0.1
+	pb.flthp_d = 1 + ps.hpf_ramp * 0.0003
+
+	// Vibrato
+	pb.vibrato_speed = math.pow(ps.vib_speed, 2) * 0.01
+	pb.vibrato_amplitude = ps.vib_strength * 0.5
+
+	// Envelope
+	pb.envelope_length = {
+		int(ps.env_attack  * ps.env_attack  * 100_000),
+		int(ps.env_sustain * ps.env_sustain * 100_000),
+		int(ps.env_decay   * ps.env_decay   * 100_000),
+	}
+
+	// Flanger
+	pb.flanger_offset = 1020 * math.pow(ps.pha_offset, 2) * math.sign(ps.pha_offset)
+	pb.flanger_offset_slide = math.pow(ps.pha_ramp, 2) * math.sign(ps.pha_ramp)
+
+	// Repeat
+	repeat_time := int(math.pow(1 - ps.repeat_speed, 2) * 20_000 + 32)
+	if ps.repeat_speed == 0 {
+		repeat_time = 0
+	}
+
+	pb.fltp = 0
+	pb.fltdp = 0
+	pb.fltphp = 0
+
+	for _, i in pb.noise_buffer {
+		pb.noise_buffer[i] = rand.float32_range(-1, 1, &pb.rand_state)
+	}
+
+	pb.envelope_stage   = 0
+	pb.envelope_elapsed = 0
+
+	pb.vibrato_phase = 0
+
+	pb.phase = 0
+	pb.ipp   = 0
+	mem.zero(&pb.flanger_buffer[0], size_of(f32) * len(pb.flanger_buffer))
+
+	pb.oversampling = 8
+	pb.sample_rate = sample_rate
+	pb.sample_sum = 0
+	pb.num_summed = 0
+	pb.summands = 44100 / f32(sample_rate)
+
+	pb.t = 0
+}
+
+@private
+_playback_init_for_repeat :: proc(pb: ^Playback_State) {
+	ps := pb.parameters
+	pb.elapsed_since_repeat = 0
+
+	pb.period     = 100 / (ps.base_freq  * ps.base_freq  + 0.001)
+	pb.period_max = 100 / (ps.freq_limit * ps.freq_limit + 0.001)
+	pb.enable_frequency_cutoff = ps.freq_limit > 0
+	pb.period_mult    = 1 - math.pow(ps.freq_ramp, 3)  * 0.01
+	pb.period_mult_slide = -math.pow(ps.freq_dramp, 3) * 0.000001
+
+	pb.duty_cycle = 0.5 - ps.duty * 0.5
+	pb.duty_cycle_slide = -ps.duty_ramp * 0.00005
+
+	if ps.arp_mod >= 0 {
+		pb.arpeggio_multiplier = 1 - math.pow(ps.arp_mod, 2) * .9
+	}
+	else {
+		pb.arpeggio_multiplier = 1 + math.pow(ps.arp_mod, 2) * 10
+	}
+	pb.arpeggio_time = int(math.pow(1 - ps.arp_speed, 2) * 20000 + 32)
+	if ps.arp_speed == 1 {
+		pb.arpeggio_time = 0
+	}
+}
+
+generate_into_buffer :: proc(
+	buffer: []$T,
+	pb: ^Playback_State,
+	db_gain: f32 = 0,
+) -> (num_samples_written: int, err: Error)  where intrinsics.type_is_numeric(T) {
+	using pb
+	ps := pb.parameters
+
+	linear_gain := math.pow(10, db_gain / 10) * (math.exp(ps.sound_vol) - 1)
+
+	for num_samples_written < len(buffer) {
 		// Repeats
 		if repeat_time != 0 {
-			rp.elapsed_since_repeat += 1
-			if rp.elapsed_since_repeat >= repeat_time {
-				init_for_repeat(&rp, ps)
+			pb.elapsed_since_repeat += 1
+			if pb.elapsed_since_repeat >= repeat_time {
+				_playback_init_for_repeat(pb)
 			}
 		}
 
 		// Arpeggio (single)
-		if(rp.arpeggio_time != 0 && t >= rp.arpeggio_time) {
-			rp.arpeggio_time = 0
-			rp.period *= rp.arpeggio_multiplier
+		if(pb.arpeggio_time != 0 && t >= pb.arpeggio_time) {
+			pb.arpeggio_time = 0
+			pb.period *= pb.arpeggio_multiplier
 		}
 
 		// Frequency slide, and frequency slide slide!
-		rp.period_mult += rp.period_mult_slide
-		rp.period *= rp.period_mult
-		if rp.period > rp.period_max {
-			rp.period = rp.period_max
-			if rp.enable_frequency_cutoff {
+		pb.period_mult += pb.period_mult_slide
+		pb.period *= pb.period_mult
+		if pb.period > pb.period_max {
+			pb.period = pb.period_max
+			if pb.enable_frequency_cutoff {
 				break
 			}
 		}
 
 		// Vibrato
-		rfperiod := rp.period
+		rfperiod := pb.period
 		if (vibrato_amplitude > 0) {
 			vibrato_phase += vibrato_speed
-			rfperiod = rp.period * (1 + math.sin(vibrato_phase) * vibrato_amplitude)
+			rfperiod = pb.period * (1 + math.sin(vibrato_phase) * vibrato_amplitude)
 		}
-		iperiod := max(int(rfperiod), OVERSAMPLING)
+		iperiod := max(int(rfperiod), pb.oversampling)
 
 		// Square wave duty cycle
-		rp.duty_cycle = clamp(rp.duty_cycle + rp.duty_cycle_slide, 0, 0.5)
+		pb.duty_cycle = clamp(pb.duty_cycle + pb.duty_cycle_slide, 0, 0.5)
 
 		// Volume envelope
 		envelope_elapsed += 1
 		if envelope_elapsed > envelope_length[envelope_stage] {
 			envelope_elapsed = 0
 			envelope_stage += 1
-			if envelope_stage > 2 { break }
+			if envelope_stage > 2 {
+				break
+			}
 		}
 		env_vol: f32
 		envf := f32(envelope_elapsed) / f32(envelope_length[envelope_stage])
@@ -263,7 +321,7 @@ generate_pcm :: proc(
 			case ENV_ATTACK:
 				env_vol = envf
 			case ENV_SUSTAIN:
-				env_vol = 1 + (1 - envf) * 2 * envelope_punch
+				env_vol = 1 + (1 - envf) * 2 * ps.env_punch
 			case ENV_DECAY:
 				env_vol = 1 - envf
 		}
@@ -278,14 +336,14 @@ generate_pcm :: proc(
 
 		// 8x oversampling
 		sample: f32
-		for si in 0 ..< OVERSAMPLING {
+		for si in 0 ..< pb.oversampling {
 			sub_sample: f32
 			phase += 1
 			if (phase >= iperiod) {
 				phase %= iperiod
 				if ps.wave_type == .Noise {
 					for _, i in noise_buffer {
-						noise_buffer[i] = rand.float32_range(-1, 1, rand_state)
+						noise_buffer[i] = rand.float32_range(-1, 1, &rand_state)
 					}
 				}
 			}
@@ -294,17 +352,17 @@ generate_pcm :: proc(
 			fp := f32(phase) / f32(iperiod)
 			switch ps.wave_type {
 				case .Square:
-					if fp < rp.duty_cycle {
+					if fp < pb.duty_cycle {
 						sub_sample = 0.5
 					} else {
 						sub_sample = -0.5
 					}
 
 				case .Sawtooth:
-					if fp < rp.duty_cycle {
-						sub_sample = -1 + 2 * fp/rp.duty_cycle
+					if fp < pb.duty_cycle {
+						sub_sample = -1 + 2 * fp/pb.duty_cycle
 					} else {
-						sub_sample = 1 - 2 * (fp - rp.duty_cycle) / (1 - rp.duty_cycle)
+						sub_sample = 1 - 2 * (fp - pb.duty_cycle) / (1 - pb.duty_cycle)
 					}
 
 				case .Sine:
@@ -340,6 +398,8 @@ generate_pcm :: proc(
 			sample += sub_sample * env_vol
 		}
 
+		pb.t += 1
+
 		// Accumulate samples appropriately for sample rate
 		sample_sum += sample
 		num_summed += 1
@@ -351,27 +411,28 @@ generate_pcm :: proc(
 			continue
 		}
 
-		sample = sample / OVERSAMPLING * ps.sound_vol * linear_gain
+		sample = sample / f32(pb.oversampling) * ps.sound_vol * linear_gain
 
 		when intrinsics.type_is_integer(T) {
 			when intrinsics.type_is_unsigned(T) {
-				append(&buffer, T(clamp(
+				buffer[num_samples_written] = T(clamp(
 					(sample + 1) * f32(max(T) / 2),
 					f32(min(T)), f32(max(T)),
-				)))
+				))
 			}
 			else {
-				append(&buffer, T(clamp(
+				buffer[num_samples_written] = T(clamp(
 					sample * f32(max(T)),
 					f32(min(T)), f32(max(T)),
-				)))
+				))
 			}
 		} else {
-			append(&buffer, T(sample))
+			buffer[num_samples_written] = T(sample)
 		}
+		num_samples_written += 1
 	}
 
-	return buffer[:], .Ok
+	return num_samples_written, .Ok
 }
 
 
