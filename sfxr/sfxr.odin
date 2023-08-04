@@ -81,7 +81,7 @@ Error :: enum {
 }
 
 generate_8bit :: #force_inline proc(
-	ps: ^Params,
+	ps: Params,
 	sample_rate: int = 44100,
 	db_gain: f32 = 0,
 	seed: Maybe(u64) = nil,
@@ -92,7 +92,7 @@ generate_8bit :: #force_inline proc(
 
 generate_pcm :: proc(
 	$T: typeid,
-	ps: ^Params,
+	ps: Params,
 	sample_rate: int = 44100,
 	db_gain: f32 = 0,
 	seed: Maybe(u64) = nil,
@@ -165,20 +165,27 @@ Playback_State :: struct {
 	ipp: int,
 
 	sample_rate: int,
+	summands: f32,
 	sample_sum: f32,
 	num_summed: int,
-	summands: f32,
 }
 @private ENV_ATTACK  :: 0
 @private ENV_SUSTAIN :: 1
 @private ENV_DECAY   :: 2
 
-playback_init :: proc(pb: ^Playback_State, parameters: ^Params, sample_rate: int, seed: Maybe(u64) = nil) {
-	pb.parameters = parameters^
+playback_init :: proc(pb: ^Playback_State, parameters: Params, sample_rate: int = 44100, seed: Maybe(u64) = nil) -> Error {
+	// TODO: validate parameter ranges
+	pb.parameters = parameters
+	rand.init(&pb.rand_state, seed.(u64) or_else u64(intrinsics.read_cycle_counter()))
+	pb.sample_rate = sample_rate
+	pb.summands = 44100 / f32(pb.sample_rate)
+	playback_reset(pb)
+	return .Ok
+}
+
+playback_reset :: proc(pb: ^Playback_State) {
 	_playback_init_for_repeat(pb)
 	ps := pb.parameters
-
-	rand.init(&pb.rand_state, seed.(u64) or_else u64(intrinsics.read_cycle_counter()))
 
 	pb.fltw = math.pow(ps.lpf_freq, 3) * 0.1
 	pb.fltw_d = 1 + ps.lpf_ramp * 0.0001
@@ -224,10 +231,8 @@ playback_init :: proc(pb: ^Playback_State, parameters: ^Params, sample_rate: int
 	pb.ipp   = 0
 	mem.zero(&pb.flanger_buffer[0], size_of(f32) * len(pb.flanger_buffer))
 
-	pb.sample_rate = sample_rate
 	pb.sample_sum = 0
 	pb.num_summed = 0
-	pb.summands = 44100 / f32(sample_rate)
 
 	pb.t = 0
 }
@@ -269,7 +274,7 @@ generate_into_buffer :: proc(
 
 	linear_gain := math.pow(10, db_gain / 10) * (math.exp(ps.sound_vol) - 1)
 
-	for num_samples_written < len(buffer) {
+	for num_samples_written < len(buffer) && pb.envelope_stage < 3 {
 		// Repeats
 		if pb.repeat_time != 0 {
 			pb.elapsed_since_repeat += 1
