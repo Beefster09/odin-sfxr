@@ -437,6 +437,8 @@ generate_into_buffer :: proc(
 
 
 from_bin :: proc(ps: ^Params, data: []u8) -> Error {
+	// NOTE: sfxr binary format doesn't actually define its endianness, however it is usually little-endian like x86
+	// no major platforms/architectures right now are big-endian, so this is fine 99.9% of the time
 	version := mem.reinterpret_copy(i32, raw_data(data))
 	i := size_of(i32)
 	for field in reflect.struct_fields_zipped(Params) {
@@ -448,6 +450,7 @@ from_bin :: proc(ps: ^Params, data: []u8) -> Error {
 	}
 	return .Ok
 }
+
 from_json :: proc(ps: ^Params, data: []u8) -> Error {
 	if err := json.unmarshal(data, ps, .JSON5, runtime.nil_allocator()); err != nil {
 		return .Invalid_Data
@@ -460,11 +463,33 @@ to_bin :: proc {
 	to_bin_buf,
 	to_bin_alloc,
 }
+
 to_bin_buf :: proc(ps: ^Params, buf: []u8) -> Error {
 	if len(buf) < SERIAL_PARAMS_SIZE {
 		return .Buffer_Too_Small
 	}
-	return .Not_Implemented
+	version: i32 = PARAMS_CURRENT_VERSION
+	mem.copy(&buf[0], &version, size_of(i32))
+	i := size_of(i32)
+	for field in reflect.struct_fields_zipped(Params) {
+		mem.copy(&buf[i], rawptr(uintptr(ps) + field.offset), field.type.size)
+		i += field.type.size
+	}
+	return .Ok
 }
-to_bin_alloc :: proc(ps: ^Params, allocator := context.allocator) -> ([]u8, Error) { return nil, .Not_Implemented }
-to_json :: proc(ps: ^Params, allocator := context.allocator) -> ([]u8, Error) { return nil, .Not_Implemented }
+
+to_bin_alloc :: proc(ps: ^Params, allocator := context.allocator) -> (buf: []u8, err: Error) {
+	buf = make([]u8, SERIAL_PARAMS_SIZE)
+	defer if err != .Ok {
+		delete(buf)
+	}
+	return buf, to_bin_buf(ps, buf)
+}
+
+to_json :: proc(ps: ^Params, allocator := context.allocator) -> ([]u8, Error) {
+	data, err := json.marshal(ps, {spec = .JSON, pretty = true}, allocator)
+	if err != nil {
+		return nil, .Invalid_Data
+	}
+	return data, .Ok
+}
