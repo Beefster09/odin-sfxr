@@ -265,22 +265,21 @@ generate_into_buffer :: proc(
 	pb: ^Playback_State,
 	db_gain: f32 = 0,
 ) -> (num_samples_written: int, err: Error)  where intrinsics.type_is_numeric(T) {
-	using pb
 	ps := pb.parameters
 
 	linear_gain := math.pow(10, db_gain / 10) * (math.exp(ps.sound_vol) - 1)
 
 	for num_samples_written < len(buffer) {
 		// Repeats
-		if repeat_time != 0 {
+		if pb.repeat_time != 0 {
 			pb.elapsed_since_repeat += 1
-			if pb.elapsed_since_repeat >= repeat_time {
+			if pb.elapsed_since_repeat >= pb.repeat_time {
 				_playback_init_for_repeat(pb)
 			}
 		}
 
 		// Arpeggio (single)
-		if(pb.arpeggio_time != 0 && t >= pb.arpeggio_time) {
+		if(pb.arpeggio_time != 0 && pb.t >= pb.arpeggio_time) {
 			pb.arpeggio_time = 0
 			pb.period *= pb.arpeggio_multiplier
 		}
@@ -297,9 +296,9 @@ generate_into_buffer :: proc(
 
 		// Vibrato
 		rfperiod := pb.period
-		if (vibrato_amplitude > 0) {
-			vibrato_phase += vibrato_speed
-			rfperiod = pb.period * (1 + math.sin(vibrato_phase) * vibrato_amplitude)
+		if (pb.vibrato_amplitude > 0) {
+			pb.vibrato_phase += pb.vibrato_speed
+			rfperiod = pb.period * (1 + math.sin(pb.vibrato_phase) * pb.vibrato_amplitude)
 		}
 		iperiod := max(int(rfperiod), pb.oversampling)
 
@@ -307,17 +306,17 @@ generate_into_buffer :: proc(
 		pb.duty_cycle = clamp(pb.duty_cycle + pb.duty_cycle_slide, 0, 0.5)
 
 		// Volume envelope
-		envelope_elapsed += 1
-		if envelope_elapsed > envelope_length[envelope_stage] {
-			envelope_elapsed = 0
-			envelope_stage += 1
-			if envelope_stage > 2 {
+		pb.envelope_elapsed += 1
+		if pb.envelope_elapsed > pb.envelope_length[pb.envelope_stage] {
+			pb.envelope_elapsed = 0
+			pb.envelope_stage += 1
+			if pb.envelope_stage > 2 {
 				break
 			}
 		}
 		env_vol: f32
-		envf := f32(envelope_elapsed) / f32(envelope_length[envelope_stage])
-		switch envelope_stage {
+		envf := f32(pb.envelope_elapsed) / f32(pb.envelope_length[pb.envelope_stage])
+		switch pb.envelope_stage {
 			case ENV_ATTACK:
 				env_vol = envf
 			case ENV_SUSTAIN:
@@ -327,29 +326,28 @@ generate_into_buffer :: proc(
 		}
 
 		// Flanger step
-		flanger_offset += flanger_offset_slide
-		iphase := clamp(abs(int(flanger_offset)), 0, 1023)
+		pb.flanger_offset += pb.flanger_offset_slide
+		iphase := clamp(abs(int(pb.flanger_offset)), 0, 1023)
 
-		if (flthp_d != 0) {
-			flthp = clamp(flthp * flthp_d, 0.00001, 0.1)
+		if (pb.flthp_d != 0) {
+			pb.flthp = clamp(pb.flthp * pb.flthp_d, 0.00001, 0.1)
 		}
 
-		// 8x oversampling
 		sample: f32
 		for si in 0 ..< pb.oversampling {
 			sub_sample: f32
-			phase += 1
-			if (phase >= iperiod) {
-				phase %= iperiod
+			pb.phase += 1
+			if (pb.phase >= iperiod) {
+				pb.phase %= iperiod
 				if ps.wave_type == .Noise {
-					for _, i in noise_buffer {
-						noise_buffer[i] = rand.float32_range(-1, 1, &rand_state)
+					for _, i in pb.noise_buffer {
+						pb.noise_buffer[i] = rand.float32_range(-1, 1, &pb.rand_state)
 					}
 				}
 			}
 
 			// Base waveform
-			fp := f32(phase) / f32(iperiod)
+			fp := f32(pb.phase) / f32(iperiod)
 			switch ps.wave_type {
 				case .Square:
 					if fp < pb.duty_cycle {
@@ -369,30 +367,30 @@ generate_into_buffer :: proc(
 					sub_sample = math.sin(fp * math.TAU)
 
 				case .Noise:
-					sub_sample = noise_buffer[phase * 32 / iperiod]
+					sub_sample = pb.noise_buffer[pb.phase * 32 / iperiod]
 			}
 
 			// Low-pass filter
-			pp := fltp
-			fltw = clamp(fltw * fltw_d, 0, 0.1)
+			pp := pb.fltp
+			pb.fltw = clamp(pb.fltw * pb.fltw_d, 0, 0.1)
 			if (ps.filter_on) {
-				fltdp += (sub_sample - fltp) * fltw
-				fltdp -= fltdp * fltdmp
+				pb.fltdp += (sub_sample - pb.fltp) * pb.fltw
+				pb.fltdp -= pb.fltdp * pb.fltdmp
 			} else {
-				fltp = sub_sample
-				fltdp = 0
+				pb.fltp = sub_sample
+				pb.fltdp = 0
 			}
-			fltp += fltdp
+			pb.fltp += pb.fltdp
 
 			// High-pass filter
-			fltphp += fltp - pp
-			fltphp -= fltphp * flthp
-			sub_sample = fltphp
+			pb.fltphp += pb.fltp - pp
+			pb.fltphp -= pb.fltphp * pb.flthp
+			sub_sample = pb.fltphp
 
 			// Flanger
-			flanger_buffer[ipp & 1023] = sub_sample
-			sub_sample += flanger_buffer[(ipp - iphase + 1024) & 1023]
-			ipp = (ipp + 1) & 1023
+			pb.flanger_buffer[pb.ipp & 1023] = sub_sample
+			sub_sample += pb.flanger_buffer[(pb.ipp - iphase + 1024) & 1023]
+			pb.ipp = (pb.ipp + 1) & 1023
 
 			// final accumulation and envelope application
 			sample += sub_sample * env_vol
@@ -401,17 +399,17 @@ generate_into_buffer :: proc(
 		pb.t += 1
 
 		// Accumulate samples appropriately for sample rate
-		sample_sum += sample
-		num_summed += 1
-		if f32(num_summed) >= summands {
-			num_summed = 0
-			sample = sample_sum / summands
-			sample_sum = 0
+		pb.sample_sum += sample
+		pb.num_summed += 1
+		if f32(pb.num_summed) >= pb.summands {
+			pb.num_summed = 0
+			sample = pb.sample_sum / pb.summands
+			pb.sample_sum = 0
 		} else {
 			continue
 		}
 
-		sample = sample / f32(pb.oversampling) * ps.sound_vol * linear_gain
+		sample *= ps.sound_vol * linear_gain / f32(pb.oversampling)
 
 		when intrinsics.type_is_integer(T) {
 			when intrinsics.type_is_unsigned(T) {
