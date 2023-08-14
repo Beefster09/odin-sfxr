@@ -13,4 +13,4 @@ import the library with
 import "shared:sfxr"
 ```
 
-It's up to you to play the generated pcm samples in an audio engine of your choice (perhaps vendor:miniaudio)
+A miniaudio data source implementation is included in sfxr/miniaudio

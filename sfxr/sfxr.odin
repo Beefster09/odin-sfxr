@@ -13,9 +13,10 @@ import "core:strconv"
 
 Wave_Shape :: enum i32 {
 	Square   = 0,
-	Sawtooth = 1,
+	Sawtooth = 1,  // also Triangle wave (based on duty cycle)
 	Sine     = 2,
 	Noise    = 3,
+	Noise_Metallic = 4,
 }
 
 Params :: struct {
@@ -68,7 +69,7 @@ Params :: struct {
 	arp_speed:     f32 `json:"p_arp_speed" v:"101"`,     // Change speed
 }
 SERIAL_PARAMS_SIZE :: size_of(Params) + size_of(i32) - 3  // i32 version, accounts for padding after filter_on
-PARAMS_CURRENT_VERSION :: 102
+PARAMS_CURRENT_VERSION :: 103
 
 Error :: enum {
 	Ok = 0,
@@ -371,7 +372,7 @@ generate_into_buffer :: proc(
 				case .Sine:
 					sub_sample = math.sin(fp * math.TAU)
 
-				case .Noise:
+				case .Noise, .Noise_Metallic:
 					sub_sample = pb.noise_buffer[pb.phase * 32 / iperiod]
 			}
 
