@@ -17,6 +17,7 @@ Wave_Shape :: enum i32 {
 	Sine     = 2,
 	Noise    = 3,
 	Noise_Metallic = 4,
+	Ease = 5,
 }
 
 Params :: struct {
@@ -371,6 +372,10 @@ generate_into_buffer :: proc(
 
 				case .Sine:
 					sub_sample = math.sin(fp * math.TAU)
+
+				case .Ease:
+					s := math.sin(fp * math.TAU)
+					sub_sample = s * s * (fp < pb.duty_cycle? 1 : -1)
 
 				case .Noise, .Noise_Metallic:
 					sub_sample = pb.noise_buffer[pb.phase * 32 / iperiod]
