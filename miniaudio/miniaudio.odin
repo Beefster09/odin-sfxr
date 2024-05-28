@@ -2,7 +2,7 @@
 
 package sfxr_ma
 
-import "core:runtime"
+import "base:runtime"
 import "core:slice"
 
 import ma "vendor:miniaudio"
@@ -11,8 +11,8 @@ import sfxr ".."
 
 
 Generator :: struct {
-	base: ma.data_source_base,
-	playback: sfxr.Playback_State,
+	base:         ma.data_source_base,
+	playback:     sfxr.Playback_State,
 	odin_context: runtime.Context,
 }
 
@@ -24,7 +24,7 @@ generator_init :: proc {
 generator_init_params :: proc(g: ^Generator, parameters: sfxr.Params, sample_rate := 44100) -> ma.result {
 	cfg := ma.data_source_config_init()
 	cfg.vtable = &g_sfxr_vtable
-	status := ma.data_source_init(&cfg, cast(^ma.data_source) &g.base)
+	status := ma.data_source_init(&cfg, cast(^ma.data_source)&g.base)
 	if status != .SUCCESS {
 		return status
 	}
@@ -38,7 +38,7 @@ generator_init_params :: proc(g: ^Generator, parameters: sfxr.Params, sample_rat
 generator_init_bin :: proc(g: ^Generator, data: []u8, sample_rate := 44100) -> ma.result {
 	cfg := ma.data_source_config_init()
 	cfg.vtable = &g_sfxr_vtable
-	status := ma.data_source_init(&cfg, cast(^ma.data_source) &g.base)
+	status := ma.data_source_init(&cfg, cast(^ma.data_source)&g.base)
 	if status != .SUCCESS {
 		return status
 	}
@@ -58,7 +58,15 @@ create_sound :: proc {
 	create_sound_bin,
 }
 
-create_sound_params :: proc(engine: ^ma.engine, params: sfxr.Params, sample_rate := 44100, allocator := context.allocator) -> (sound: ^ma.sound, status: ma.result) {
+create_sound_params :: proc(
+	engine: ^ma.engine,
+	params: sfxr.Params,
+	sample_rate := 44100,
+	allocator := context.allocator,
+) -> (
+	sound: ^ma.sound,
+	status: ma.result,
+) {
 	generator := new(Generator, allocator)
 	defer if status != .SUCCESS {
 		free(generator)
@@ -72,14 +80,22 @@ create_sound_params :: proc(engine: ^ma.engine, params: sfxr.Params, sample_rate
 	defer if status != .SUCCESS {
 		free(sound)
 	}
-	status = ma.sound_init_from_data_source(engine, cast(^ma.data_source) generator, 0, nil, sound)
+	status = ma.sound_init_from_data_source(engine, cast(^ma.data_source)generator, 0, nil, sound)
 	if status != .SUCCESS {
 		return nil, status
 	}
 	return sound, .SUCCESS
 }
 
-create_sound_bin :: proc(engine: ^ma.engine, data: []u8, sample_rate := 44100, allocator := context.allocator) -> (sound: ^ma.sound, status: ma.result) {
+create_sound_bin :: proc(
+	engine: ^ma.engine,
+	data: []u8,
+	sample_rate := 44100,
+	allocator := context.allocator,
+) -> (
+	sound: ^ma.sound,
+	status: ma.result,
+) {
 	generator := new(Generator, allocator)
 	defer if status != .SUCCESS {
 		free(generator)
@@ -93,7 +109,7 @@ create_sound_bin :: proc(engine: ^ma.engine, data: []u8, sample_rate := 44100, a
 	defer if status != .SUCCESS {
 		free(sound)
 	}
-	status = ma.sound_init_from_data_source(engine, cast(^ma.data_source) generator, 0, nil, sound)
+	status = ma.sound_init_from_data_source(engine, cast(^ma.data_source)generator, 0, nil, sound)
 	if status != .SUCCESS {
 		return nil, status
 	}
@@ -106,7 +122,7 @@ destroy_sound :: proc(sound: ^ma.sound) {
 	free(sound)
 }
 
-@private
+@(private)
 g_sfxr_vtable := ma.data_source_vtable {
 	generator_read,
 	generator_seek,
@@ -117,11 +133,16 @@ g_sfxr_vtable := ma.data_source_vtable {
 	0,
 }
 
-@private
-generator_read :: proc "c" (ds: ^ma.data_source, p_frames_out: rawptr, frame_count: u64, p_frames_read: ^u64) -> ma.result {
-	g := cast(^Generator) ds
+@(private)
+generator_read :: proc "c" (
+	ds: ^ma.data_source,
+	p_frames_out: rawptr,
+	frame_count: u64,
+	p_frames_read: ^u64,
+) -> ma.result {
+	g := cast(^Generator)ds
 	context = g.odin_context
-	buffer := slice.from_ptr(cast([^]f32) p_frames_out, int(frame_count))
+	buffer := slice.from_ptr(cast([^]f32)p_frames_out, int(frame_count))
 	n_read, err := sfxr.generate_into_buffer(buffer, &g.playback)
 	if err == .Ok {
 		p_frames_read^ = u64(n_read)
@@ -131,10 +152,10 @@ generator_read :: proc "c" (ds: ^ma.data_source, p_frames_out: rawptr, frame_cou
 	}
 }
 
-@private
+@(private)
 generator_seek :: proc "c" (ds: ^ma.data_source, frame_index: u64) -> ma.result {
 	if frame_index == 0 {
-		g := cast(^Generator) ds
+		g := cast(^Generator)ds
 		context = g.odin_context
 		sfxr.playback_reset(&g.playback)
 		return .SUCCESS
@@ -142,9 +163,16 @@ generator_seek :: proc "c" (ds: ^ma.data_source, frame_index: u64) -> ma.result 
 	return .BAD_SEEK
 }
 
-@private
-generator_get_data_format :: proc "c" (ds: ^ma.data_source, p_data_format: ^ma.format, p_channels: ^u32, p_sample_rate: ^u32, p_channel_map: [^]ma.channel, channel_map_cap: uint) -> ma.result {
-	g := cast(^Generator) ds
+@(private)
+generator_get_data_format :: proc "c" (
+	ds: ^ma.data_source,
+	p_data_format: ^ma.format,
+	p_channels: ^u32,
+	p_sample_rate: ^u32,
+	p_channel_map: [^]ma.channel,
+	channel_map_cap: uint,
+) -> ma.result {
+	g := cast(^Generator)ds
 	p_data_format^ = .f32
 	p_channels^ = 1
 	p_sample_rate^ = u32(g.playback.sample_rate)
@@ -154,18 +182,18 @@ generator_get_data_format :: proc "c" (ds: ^ma.data_source, p_data_format: ^ma.f
 	return .SUCCESS
 }
 
-@private
-generator_get_cursor :: proc "c" (ds: ^ma.data_source, p_cursor: ^u64) -> ma.result{
-	p_cursor^ = u64((cast(^Generator) ds).playback.t)
+@(private)
+generator_get_cursor :: proc "c" (ds: ^ma.data_source, p_cursor: ^u64) -> ma.result {
+	p_cursor^ = u64((cast(^Generator)ds).playback.t)
 	return .SUCCESS
 }
 
-@private
+@(private)
 generator_get_length :: proc "c" (ds: ^ma.data_source, p_length: ^u64) -> ma.result {
 	return .NOT_IMPLEMENTED
 }
 
-@private
+@(private)
 generator_on_set_looping :: proc "c" (ds: ^ma.data_source, isLooping: b32) -> ma.result {
 	return .NOT_IMPLEMENTED
 }

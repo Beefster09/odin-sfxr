@@ -1,75 +1,73 @@
 package sfxr
 
 
+import "base:runtime"
 import "core:encoding/json"
-import "core:intrinsics"
+import "base:intrinsics"
 import "core:math"
 import "core:math/rand"
 import "core:mem"
 import "core:reflect"
-import "core:runtime"
 import "core:strconv"
 
 
 Wave_Shape :: enum i32 {
-	Square   = 0,
-	Sawtooth = 1,  // also Triangle wave (based on duty cycle)
-	Sine     = 2,
-	Noise    = 3,
+	Square         = 0,
+	Sawtooth       = 1, // also Triangle wave (based on duty cycle)
+	Sine           = 2,
+	Noise          = 3,
 	Noise_Metallic = 4,
-	Ease = 5,
+	Ease           = 5,
 }
 
 Params :: struct {
 	// should match original serialization order and versioning
 	// see https://github.com/grimfang4/sfxr/blob/master/sfxr/source/main.cpp#L196
-	wave_type: Wave_Shape,
-
-	sound_vol: f32 `v:"102"`,
+	wave_type:     Wave_Shape,
+	sound_vol:     f32 `v:"102"`,
 
 	//  Tone
-	base_freq:     f32 `json:"p_base_freq"`,     // Start frequency
-	freq_limit:    f32 `json:"p_freq_limit"`,    // Min frequency cutoff
-	freq_ramp:     f32 `json:"p_freq_ramp"`,     // Slide (SIGNED)
-	freq_dramp:    f32 `json:"p_freq_dramp" v:"101"`,    // Delta slide (SIGNED)
+	base_freq:     f32 `json:"p_base_freq"`, // Start frequency
+	freq_limit:    f32 `json:"p_freq_limit"`, // Min frequency cutoff
+	freq_ramp:     f32 `json:"p_freq_ramp"`, // Slide (SIGNED)
+	freq_dramp:    f32 `json:"p_freq_dramp" v:"101"`, // Delta slide (SIGNED)
 
 	//  Square wave duty (proportion of time signal is high vs. low)
-	duty:          f32 `json:"p_duty"`,          // Square duty
-	duty_ramp:     f32 `json:"p_duty_ramp"`,     // Duty sweep (SIGNED)
+	duty:          f32 `json:"p_duty"`, // Square duty
+	duty_ramp:     f32 `json:"p_duty_ramp"`, // Duty sweep (SIGNED)
 
 	//  Vibrato
-	vib_strength:  f32 `json:"p_vib_strength"`,  // Vibrato depth
-	vib_speed:     f32 `json:"p_vib_speed"`,     // Vibrato speed
+	vib_strength:  f32 `json:"p_vib_strength"`, // Vibrato depth
+	vib_speed:     f32 `json:"p_vib_speed"`, // Vibrato speed
 	vib_delay:     f32, // not in jsfxr
 
 	//  Envelope
-	env_attack:    f32 `json:"p_env_attack"`,    // Attack time
-	env_sustain:   f32 `json:"p_env_sustain"`,   // Sustain time
-	env_decay:     f32 `json:"p_env_decay"`,     // Decay time
-	env_punch:     f32 `json:"p_env_punch"`,     // Sustain punch
-
-	filter_on: bool, // not in jsfxr
+	env_attack:    f32 `json:"p_env_attack"`, // Attack time
+	env_sustain:   f32 `json:"p_env_sustain"`, // Sustain time
+	env_decay:     f32 `json:"p_env_decay"`, // Decay time
+	env_punch:     f32 `json:"p_env_punch"`, // Sustain punch
+	filter_on:     bool, // not in jsfxr
 	//  Low-pass filter
 	lpf_resonance: f32 `json:"p_lpf_resonance"`, // Low-pass filter resonance
-	lpf_freq:      f32 `json:"p_lpf_freq"`,      // Low-pass filter cutoff
-	lpf_ramp:      f32 `json:"p_lpf_ramp"`,      // Low-pass filter cutoff sweep (SIGNED)
+	lpf_freq:      f32 `json:"p_lpf_freq"`, // Low-pass filter cutoff
+	lpf_ramp:      f32 `json:"p_lpf_ramp"`, // Low-pass filter cutoff sweep (SIGNED)
 
 	//  High-pass filter
-	hpf_freq:      f32 `json:"p_hpf_freq"`,      // High-pass filter cutoff
-	hpf_ramp:      f32 `json:"p_hpf_ramp"`,      // High-pass filter cutoff sweep (SIGNED)
+	hpf_freq:      f32 `json:"p_hpf_freq"`, // High-pass filter cutoff
+	hpf_ramp:      f32 `json:"p_hpf_ramp"`, // High-pass filter cutoff sweep (SIGNED)
 
 	//  Flanger
-	pha_offset:    f32 `json:"p_pha_offset"`,    // Flanger offset (SIGNED)
-	pha_ramp:      f32 `json:"p_pha_ramp"`,      // Flanger sweep (SIGNED)
+	pha_offset:    f32 `json:"p_pha_offset"`, // Flanger offset (SIGNED)
+	pha_ramp:      f32 `json:"p_pha_ramp"`, // Flanger sweep (SIGNED)
 
 	//  Repeat
-	repeat_speed:  f32 `json:"p_repeat_speed"`,  // Repeat speed
+	repeat_speed:  f32 `json:"p_repeat_speed"`, // Repeat speed
 
 	//  Tonal change
-	arp_mod:       f32 `json:"p_arp_mod" v:"101"`,       // Change amount (SIGNED)
-	arp_speed:     f32 `json:"p_arp_speed" v:"101"`,     // Change speed
+	arp_mod:       f32 `json:"p_arp_mod" v:"101"`, // Change amount (SIGNED)
+	arp_speed:     f32 `json:"p_arp_speed" v:"101"`, // Change speed
 }
-SERIAL_PARAMS_SIZE :: size_of(Params) + size_of(i32) - 3  // i32 version, accounts for padding after filter_on
+SERIAL_PARAMS_SIZE :: size_of(Params) + size_of(i32) - 3 // i32 version, accounts for padding after filter_on
 PARAMS_CURRENT_VERSION :: 103
 
 Error :: enum {
@@ -77,7 +75,6 @@ Error :: enum {
 	Invalid_Data,
 	Allocation_Failure,
 	Buffer_Too_Small,
-
 	Unknown = -1,
 	Not_Implemented = -2,
 }
@@ -88,7 +85,10 @@ generate_8bit :: #force_inline proc(
 	db_gain: f32 = 0,
 	seed: Maybe(u64) = nil,
 	allocator := context.allocator,
-) -> ([]u8, Error) {
+) -> (
+	[]u8,
+	Error,
+) {
 	return generate_pcm(u8, ps, sample_rate, db_gain, seed, allocator)
 }
 
@@ -99,7 +99,10 @@ generate_pcm :: proc(
 	db_gain: f32 = 0,
 	seed: Maybe(u64) = nil,
 	allocator := context.allocator,
-) -> (pcm_samples: []T, err: Error) {
+) -> (
+	pcm_samples: []T,
+	err: Error,
+) {
 	pb: Playback_State
 	playback_init(&pb, ps, sample_rate, seed)
 
@@ -123,59 +126,58 @@ generate_pcm :: proc(
 		if n > 0 {
 			append(&buffer, ..chunk[:n])
 		}
-		if n < 4096 { break }
+		if n < 4096 {break}
 	}
 
 	return buffer[:], .Ok
 }
 
 Playback_State :: struct {
-	parameters: Params,
-
-	t: int,
-	repeat_time: int,
-	elapsed_since_repeat: int,
-
-	period, period_max: f32,
-	enable_frequency_cutoff: bool,
+	parameters:                     Params,
+	t:                              int,
+	repeat_time:                    int,
+	elapsed_since_repeat:           int,
+	period, period_max:             f32,
+	enable_frequency_cutoff:        bool,
 	period_mult, period_mult_slide: f32,
-	duty_cycle, duty_cycle_slide: f32,
-	arpeggio_multiplier: f32,
-	arpeggio_time: int,
-
-	fltw, fltw_d: f32,
-	flthp, flthp_d: f32,
-	fltdmp: f32,
-	fltp, fltdp, fltphp: f32,
-
-	vibrato_speed: f32,
-	vibrato_amplitude: f32,
-	vibrato_phase: f32,
-
-	envelope_length: [3]int,
-	envelope_stage: int,
-	envelope_elapsed: int,
-
-	flanger_buffer: [1024]f32,
-	flanger_offset: f32,
-	flanger_offset_slide: f32,
-
-	noise_buffer: [32]f32,
-	rand_state: rand.Rand,
-
-	phase: int,
-	ipp: int,
-
-	sample_rate: int,
-	summands: f32,
-	sample_sum: f32,
-	num_summed: int,
+	duty_cycle, duty_cycle_slide:   f32,
+	arpeggio_multiplier:            f32,
+	arpeggio_time:                  int,
+	fltw, fltw_d:                   f32,
+	flthp, flthp_d:                 f32,
+	fltdmp:                         f32,
+	fltp, fltdp, fltphp:            f32,
+	vibrato_speed:                  f32,
+	vibrato_amplitude:              f32,
+	vibrato_phase:                  f32,
+	envelope_length:                [3]int,
+	envelope_stage:                 int,
+	envelope_elapsed:               int,
+	flanger_buffer:                 [1024]f32,
+	flanger_offset:                 f32,
+	flanger_offset_slide:           f32,
+	noise_buffer:                   [32]f32,
+	rand_state:                     rand.Rand,
+	phase:                          int,
+	ipp:                            int,
+	sample_rate:                    int,
+	summands:                       f32,
+	sample_sum:                     f32,
+	num_summed:                     int,
 }
-@private ENV_ATTACK  :: 0
-@private ENV_SUSTAIN :: 1
-@private ENV_DECAY   :: 2
+@(private)
+ENV_ATTACK :: 0
+@(private)
+ENV_SUSTAIN :: 1
+@(private)
+ENV_DECAY :: 2
 
-playback_init :: proc(pb: ^Playback_State, parameters: Params, sample_rate: int = 44100, seed: Maybe(u64) = nil) -> Error {
+playback_init :: proc(
+	pb: ^Playback_State,
+	parameters: Params,
+	sample_rate: int = 44100,
+	seed: Maybe(u64) = nil,
+) -> Error {
 	// TODO: validate parameter ranges
 	pb.parameters = parameters
 	rand.init(&pb.rand_state, seed.(u64) or_else u64(intrinsics.read_cycle_counter()))
@@ -201,9 +203,9 @@ playback_reset :: proc(pb: ^Playback_State) {
 
 	// Envelope
 	pb.envelope_length = {
-		int(ps.env_attack  * ps.env_attack  * 100_000),
+		int(ps.env_attack * ps.env_attack * 100_000),
 		int(ps.env_sustain * ps.env_sustain * 100_000),
-		int(ps.env_decay   * ps.env_decay   * 100_000),
+		int(ps.env_decay * ps.env_decay * 100_000),
 	}
 
 	// Flanger
@@ -224,13 +226,13 @@ playback_reset :: proc(pb: ^Playback_State) {
 		pb.noise_buffer[i] = rand.float32_range(-1, 1, &pb.rand_state)
 	}
 
-	pb.envelope_stage   = 0
+	pb.envelope_stage = 0
 	pb.envelope_elapsed = 0
 
 	pb.vibrato_phase = 0
 
 	pb.phase = 0
-	pb.ipp   = 0
+	pb.ipp = 0
 	mem.zero(&pb.flanger_buffer[0], size_of(f32) * len(pb.flanger_buffer))
 
 	pb.sample_sum = 0
@@ -239,15 +241,15 @@ playback_reset :: proc(pb: ^Playback_State) {
 	pb.t = 0
 }
 
-@private
+@(private)
 _playback_init_for_repeat :: proc(pb: ^Playback_State) {
 	ps := pb.parameters
 	pb.elapsed_since_repeat = 0
 
-	pb.period     = 100 / (ps.base_freq  * ps.base_freq  + 0.001)
+	pb.period = 100 / (ps.base_freq * ps.base_freq + 0.001)
 	pb.period_max = 100 / (ps.freq_limit * ps.freq_limit + 0.001)
 	pb.enable_frequency_cutoff = ps.freq_limit > 0
-	pb.period_mult    = 1 - math.pow(ps.freq_ramp, 3)  * 0.01
+	pb.period_mult = 1 - math.pow(ps.freq_ramp, 3) * 0.01
 	pb.period_mult_slide = -math.pow(ps.freq_dramp, 3) * 0.000001
 
 	pb.duty_cycle = 0.5 - ps.duty * 0.5
@@ -255,8 +257,7 @@ _playback_init_for_repeat :: proc(pb: ^Playback_State) {
 
 	if ps.arp_mod >= 0 {
 		pb.arpeggio_multiplier = 1 - math.pow(ps.arp_mod, 2) * .9
-	}
-	else {
+	} else {
 		pb.arpeggio_multiplier = 1 + math.pow(ps.arp_mod, 2) * 10
 	}
 	pb.arpeggio_time = int(math.pow(1 - ps.arp_speed, 2) * 20000 + 32)
@@ -269,7 +270,10 @@ generate_into_buffer :: proc(
 	buffer: []$T,
 	pb: ^Playback_State,
 	db_gain: f32 = 0,
-) -> (num_samples_written: int, err: Error)  where intrinsics.type_is_numeric(T) {
+) -> (
+	num_samples_written: int,
+	err: Error,
+) where intrinsics.type_is_numeric(T) {
 	OVERSAMPLING :: 8
 
 	ps := pb.parameters
@@ -286,7 +290,7 @@ generate_into_buffer :: proc(
 		}
 
 		// Arpeggio (single)
-		if(pb.arpeggio_time != 0 && pb.t >= pb.arpeggio_time) {
+		if (pb.arpeggio_time != 0 && pb.t >= pb.arpeggio_time) {
 			pb.arpeggio_time = 0
 			pb.period *= pb.arpeggio_multiplier
 		}
@@ -324,12 +328,12 @@ generate_into_buffer :: proc(
 		env_vol: f32
 		envf := f32(pb.envelope_elapsed) / f32(pb.envelope_length[pb.envelope_stage])
 		switch pb.envelope_stage {
-			case ENV_ATTACK:
-				env_vol = envf
-			case ENV_SUSTAIN:
-				env_vol = 1 + (1 - envf) * 2 * ps.env_punch
-			case ENV_DECAY:
-				env_vol = 1 - envf
+		case ENV_ATTACK:
+			env_vol = envf
+		case ENV_SUSTAIN:
+			env_vol = 1 + (1 - envf) * 2 * ps.env_punch
+		case ENV_DECAY:
+			env_vol = 1 - envf
 		}
 
 		// Flanger step
@@ -356,29 +360,29 @@ generate_into_buffer :: proc(
 			// Base waveform
 			fp := f32(pb.phase) / f32(iperiod)
 			switch ps.wave_type {
-				case .Square:
-					if fp < pb.duty_cycle {
-						sub_sample = 0.5
-					} else {
-						sub_sample = -0.5
-					}
+			case .Square:
+				if fp < pb.duty_cycle {
+					sub_sample = 0.5
+				} else {
+					sub_sample = -0.5
+				}
 
-				case .Sawtooth:
-					if fp < pb.duty_cycle {
-						sub_sample = -1 + 2 * fp/pb.duty_cycle
-					} else {
-						sub_sample = 1 - 2 * (fp - pb.duty_cycle) / (1 - pb.duty_cycle)
-					}
+			case .Sawtooth:
+				if fp < pb.duty_cycle {
+					sub_sample = -1 + 2 * fp / pb.duty_cycle
+				} else {
+					sub_sample = 1 - 2 * (fp - pb.duty_cycle) / (1 - pb.duty_cycle)
+				}
 
-				case .Sine:
-					sub_sample = math.sin(fp * math.TAU)
+			case .Sine:
+				sub_sample = math.sin(fp * math.TAU)
 
-				case .Ease:
-					s := math.sin(fp * math.TAU)
-					sub_sample = s * s * (fp < pb.duty_cycle? 1 : -1)
+			case .Ease:
+				s := math.sin(fp * math.TAU)
+				sub_sample = s * s * (fp < pb.duty_cycle ? 1 : -1)
 
-				case .Noise, .Noise_Metallic:
-					sub_sample = pb.noise_buffer[pb.phase * 32 / iperiod]
+			case .Noise, .Noise_Metallic:
+				sub_sample = pb.noise_buffer[pb.phase * 32 / iperiod]
 			}
 
 			// Low-pass filter
@@ -424,16 +428,9 @@ generate_into_buffer :: proc(
 
 		when intrinsics.type_is_integer(T) {
 			when intrinsics.type_is_unsigned(T) {
-				buffer[num_samples_written] = T(clamp(
-					(sample + 1) * f32(max(T) / 2),
-					f32(min(T)), f32(max(T)),
-				))
-			}
-			else {
-				buffer[num_samples_written] = T(clamp(
-					sample * f32(max(T)),
-					f32(min(T)), f32(max(T)),
-				))
+				buffer[num_samples_written] = T(clamp((sample + 1) * f32(max(T) / 2), f32(min(T)), f32(max(T))))
+			} else {
+				buffer[num_samples_written] = T(clamp(sample * f32(max(T)), f32(min(T)), f32(max(T))))
 			}
 		} else {
 			buffer[num_samples_written] = T(sample)
@@ -451,7 +448,8 @@ from_bin :: proc(ps: ^Params, data: []u8) -> Error {
 	version := mem.reinterpret_copy(i32, raw_data(data))
 	i := size_of(i32)
 	for field in reflect.struct_fields_zipped(Params) {
-		if version_tag, exists := reflect.struct_tag_lookup(field.tag, "v"); exists && i32(strconv.atoi(string(version_tag))) > version {
+		if version_tag, exists := reflect.struct_tag_lookup(field.tag, "v");
+		   exists && i32(strconv.atoi(string(version_tag))) > version {
 			continue
 		}
 		mem.copy(rawptr(uintptr(ps) + field.offset), &data[i], field.type.size)
