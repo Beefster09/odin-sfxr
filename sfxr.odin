@@ -1,9 +1,9 @@
 package sfxr
 
 
+import "base:intrinsics"
 import "base:runtime"
 import "core:encoding/json"
-import "base:intrinsics"
 import "core:math"
 import "core:math/rand"
 import "core:mem"
@@ -157,7 +157,8 @@ Playback_State :: struct {
 	flanger_offset:                 f32,
 	flanger_offset_slide:           f32,
 	noise_buffer:                   [32]f32,
-	rand_state:                     rand.Rand,
+	random_generator:               runtime.Random_Generator,
+	random_state:                   runtime.Default_Random_State,
 	phase:                          int,
 	ipp:                            int,
 	sample_rate:                    int,
@@ -180,7 +181,14 @@ playback_init :: proc(
 ) -> Error {
 	// TODO: validate parameter ranges
 	pb.parameters = parameters
-	rand.init(&pb.rand_state, seed.(u64) or_else u64(intrinsics.read_cycle_counter()))
+
+	if seed == nil {
+		pb.random_generator = runtime.default_random_generator()
+	} else {
+		pb.random_state = rand.create(seed.? or_else u64(intrinsics.read_cycle_counter()))
+		pb.random_generator = runtime.default_random_generator(&pb.random_state)
+	}
+
 	pb.sample_rate = sample_rate
 	pb.summands = 44100 / f32(pb.sample_rate)
 	playback_reset(pb)
@@ -188,6 +196,8 @@ playback_init :: proc(
 }
 
 playback_reset :: proc(pb: ^Playback_State) {
+	context.random_generator = pb.random_generator
+
 	_playback_init_for_repeat(pb)
 	ps := pb.parameters
 
@@ -223,7 +233,7 @@ playback_reset :: proc(pb: ^Playback_State) {
 	pb.fltphp = 0
 
 	for _, i in pb.noise_buffer {
-		pb.noise_buffer[i] = rand.float32_range(-1, 1, &pb.rand_state)
+		pb.noise_buffer[i] = rand.float32_range(-1, 1)
 	}
 
 	pb.envelope_stage = 0
@@ -275,6 +285,8 @@ generate_into_buffer :: proc(
 	err: Error,
 ) where intrinsics.type_is_numeric(T) {
 	OVERSAMPLING :: 8
+
+	context.random_generator = pb.random_generator
 
 	ps := pb.parameters
 
@@ -352,7 +364,7 @@ generate_into_buffer :: proc(
 				pb.phase %= iperiod
 				if ps.wave_type == .Noise {
 					for _, i in pb.noise_buffer {
-						pb.noise_buffer[i] = rand.float32_range(-1, 1, &pb.rand_state)
+						pb.noise_buffer[i] = rand.float32_range(-1, 1)
 					}
 				}
 			}
